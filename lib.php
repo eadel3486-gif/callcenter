@@ -415,6 +415,11 @@ function store_location($driverId, $lat, $lng, $acc = null) {
 function html_head($title) {
     return '<!DOCTYPE html><html lang="ar" dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'
         . '<title>' . h($title) . '</title>'
+        . '<link rel="manifest" href="manifest.php"><meta name="theme-color" content="#10262e">'
+        . '<link rel="icon" type="image/png" href="assets/icons/icon-192.png"><link rel="apple-touch-icon" href="assets/icons/apple-touch-icon.png">'
+        . '<meta name="mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-capable" content="yes">'
+        . '<meta name="apple-mobile-web-app-title" content="الكول سنتر"><meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">'
+        . '<script>if("serviceWorker" in navigator)addEventListener("load",function(){navigator.serviceWorker.register("sw.js").catch(function(){})})</script>'
         . '<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Arabic:wght@400;500;700&display=swap" rel="stylesheet">'
         . '<link rel="stylesheet" href="assets/style.css"></head><body>';
 }
