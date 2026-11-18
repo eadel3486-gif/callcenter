@@ -24,7 +24,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         else {
             $d = valid_date($_POST['d'] ?? '') ? $_POST['d'] : date('Y-m-d');
             $psh = user_shift() ?: (in_array($_POST['shift'] ?? '', ['صباحي', 'مسائي'], true) ? $_POST['shift'] : (cur_shift() ?: 'صباحي'));
-            $db->prepare('INSERT INTO payments(driver_id,d,amount,note,shift) VALUES(?,?,?,?,?)')->execute([$did, $d, $amt, trim($_POST['note'] ?? ''), $psh]);
+            $db->prepare('INSERT INTO payments(driver_id,d,amount,note,shift,method) VALUES(?,?,?,?,?,?)')->execute([$did, $d, $amt, trim($_POST['note'] ?? ''), $psh, pay_pick($_POST['method'] ?? 'cash')]);
             flash('تم تسجيل الدفعة');
         }
     } elseif ($act === 'delpay' && can('del')) {
@@ -54,16 +54,18 @@ $q = $db->prepare("SELECT dr.*,
   (SELECT COUNT(*) FROM orders o WHERE o.driver_id=dr.id$oSh) n,
   (SELECT COALESCE(SUM(val),0) FROM orders o WHERE o.driver_id=dr.id$oSh) v,
   (SELECT COALESCE(SUM(fee),0) FROM orders o WHERE o.driver_id=dr.id$oSh) f,
+  (SELECT COALESCE(SUM(val+fee),0) FROM orders o WHERE o.driver_id=dr.id AND o.pay_method='cash'$oSh) cash_due,
+  (SELECT COALESCE(SUM(val+fee),0) FROM orders o WHERE o.driver_id=dr.id AND o.pay_method<>'cash'$oSh) elec,
   (SELECT COALESCE(SUM(amount),0) FROM payments p WHERE p.driver_id=dr.id$pSh) paid
   FROM drivers dr ORDER BY dr.active DESC, dr.name");
-$q->execute($sh !== '' ? [$sh, $sh, $sh, $sh] : []);
+$q->execute($sh !== '' ? [$sh, $sh, $sh, $sh, $sh, $sh] : []);
 $D = $q->fetchAll();
 
 $sumN = $sumPaid = $sumRem = $owing = 0;
 $rows = [];
 foreach ($D as $r) {
     $tot = $r['v'] + $r['f'];
-    $rem = $tot - $r['paid'];
+    $rem = $r['cash_due'] - $r['paid'];   // العهدة = أوردرات الكاش فقط − ما سلّمه المندوب
     $sumN += $r['n']; $sumPaid += $r['paid']; $sumRem += $rem;
     if ($rem > 0) $owing++;
     $tgCell = $r['tg_chat_id']
@@ -72,7 +74,7 @@ foreach ($D as $r) {
     $seen = $r['last_at'] ? raw(h(date('H:i d/m', $r['last_at']))) : '—';
     $rows[] = [
         raw(h($r['name']) . ($r['active'] ? '' : ' <span class="mu">(معطّل)</span>')),
-        N($r['n']), N($r['v']), N($r['f']), N($tot), N($r['paid']),
+        N($r['n']), N($r['v']), N($r['f']), N($tot), N($r['elec']), N($r['cash_due']), N($r['paid']),
         raw($rem > 0 ? '<span class="neg">' . N($rem) . '</span>' : N($rem)),
         $rem > 0 ? 'عليه رصيد' : 'مسدد', $tgCell, $seen,
     ];
@@ -98,7 +100,7 @@ $post = fn($act, $id, $label, $cls = 'g', $confirm = '') =>
   <div><b><?= N($sumRem) ?></b><span>إجمالي المتبقي</span></div>
   <div><b><?= $owing ?></b><span>مندوبون عليهم رصيد</span></div>
 </div>
-<?= table(['المندوب', 'الأوردرات', 'القيمة', 'التوصيل', 'الإجمالي', 'المدفوع', 'المتبقي', 'الحالة', 'تليجرام', 'آخر ظهور'], $rows,
+<?= table(['المندوب', 'الأوردرات', 'القيمة', 'التوصيل', 'الإجمالي', 'إلكتروني (فيزا/إنستا)', 'كاش عليه', 'سلّمه', 'المتبقي', 'الحالة', 'تليجرام', 'آخر ظهور'], $rows,
 function ($i, $r) use ($D, $post) {
     $d = $D[$i];
     $s = '<a class="btn g s" href="index.php?p=orders&m=' . (int)$d['id'] . '">أوردراته</a> ';
@@ -106,13 +108,13 @@ function ($i, $r) use ($D, $post) {
     if (can('edit')) $s .= '<button class="btn g s" onclick="document.getElementById(\'lk' . (int)$d['id'] . '\').showModal()">ربط تليجرام</button> ' . $post('toggle', $d['id'], $d['active'] ? 'تعطيل' : 'تفعيل');
     return $s;
 }) ?>
-<p class="mu">الإجمالي = قيمة الأوردرات + خدمة التوصيل، والمتبقي = الإجمالي − المدفوع.<?= $sh !== '' ? ' الأرقام هنا لشيفت ' . h($sh) . ' فقط (أوردراته ودفعاته).' : ' الدفعات القديمة بدون شيفت تظهر في «الكل» فقط.' ?></p>
+<p class="mu">الإجمالي = قيمة الأوردرات + خدمة التوصيل. أوردرات الفيزا وإنستا باي مدفوعة إلكترونياً فلا تدخل في عهدة المندوب، والمتبقي = «كاش عليه» − «سلّمه».<?= $sh !== '' ? ' الأرقام هنا لشيفت ' . h($sh) . ' فقط (أوردراته ودفعاته).' : ' الدفعات القديمة بدون شيفت تظهر في «الكل» فقط.' ?></p>
 
 <?php foreach ($D as $d): $id = (int)$d['id']; ?>
 <dialog id="pay<?= $id ?>">
   <h3>دفعة من <?= h($d['name']) ?></h3>
   <form method="post"><?= csrf_field() ?><input type="hidden" name="act" value="pay"><input type="hidden" name="driver_id" value="<?= $id ?>">
-    <div class="fg"><label>التاريخ<input type="date" name="d" value="<?= date('Y-m-d') ?>"></label><label>المبلغ<input type="number" step="any" name="amount"></label>
+    <div class="fg"><label>التاريخ<input type="date" name="d" value="<?= date('Y-m-d') ?>"></label><label>المبلغ<input type="number" step="any" name="amount"></label><label>طريقة التسليم<?= pay_select('method', 'cash') ?></label>
       <?php if (user_shift() !== ''): ?><label>الشيفت<input value="<?= h(user_shift()) ?>" disabled></label><?php else: ?><label>الشيفت<select name="shift"><?php foreach (['صباحي', 'مسائي'] as $x): ?><option <?= $x === ($sh ?: 'صباحي') ? 'selected' : '' ?>><?= $x ?></option><?php endforeach; ?></select></label><?php endif; ?></div>
     <label>ملاحظة<input name="note"></label>
     <p><button class="btn">حفظ</button> <button type="button" class="btn g" onclick="this.closest('dialog').close()">إلغاء</button></p>
@@ -138,7 +140,7 @@ function ($i, $r) use ($D, $post) {
 <?php endforeach; ?>
 
 <h3>سجل الدفعات</h3>
-<?= table(['التاريخ', 'الشيفت', 'المندوب', 'المبلغ', 'ملاحظة'], array_map(fn($p) => [$p['d'], $p['shift'] ?: '—', $p['dname'], N($p['amount']), $p['note']], $P),
+<?= table(['التاريخ', 'الشيفت', 'المندوب', 'المبلغ', 'الطريقة', 'ملاحظة'], array_map(fn($p) => [$p['d'], $p['shift'] ?: '—', $p['dname'], N($p['amount']), pay_full($p['method'] ?? 'cash'), $p['note']], $P),
 function ($i) use ($P) {
     return can('del') ? '<form class="inl" method="post" action="index.php?p=drivers" onsubmit="return confirm(\'حذف الدفعة؟\')">' . csrf_field()
         . '<input type="hidden" name="act" value="delpay"><input type="hidden" name="id" value="' . (int)$P[$i]['id'] . '"><button class="btn r s">حذف</button></form>' : '';

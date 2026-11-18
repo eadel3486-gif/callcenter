@@ -50,6 +50,14 @@ $live = (int)$db->query('SELECT COUNT(*) FROM drivers WHERE active=1 AND last_at
   <div><b><?= N($M['c']) ?></b><span>عميل</span></div>
   <div><b><?= (int)$M['am'] ?> / <?= (int)$M['pm'] ?></b><span>صباحي / مسائي</span></div>
 </div>
+<?php
+$q = $db->prepare("SELECT pay_method pm, COUNT(*) n, COALESCE(SUM(val+fee),0) t FROM orders WHERE d LIKE ?$sAnd GROUP BY pay_method");
+$q->execute(array_merge([$like], $sa));
+$PM = array_fill_keys(array_keys(PAY), ['n' => 0, 't' => 0]);
+foreach ($q->fetchAll() as $r) $PM[pay_pick($r['pm'])] = ['n' => (int)$r['n'], 't' => (float)$r['t']];
+?>
+<h3>حسب طريقة الدفع (الشهر)</h3>
+<?= table(['الطريقة', 'الأوردرات', 'الإجمالي (قيمة + توصيل)'], array_map(fn($k) => [pay_full($k), N($PM[$k]['n']), N($PM[$k]['t'])], array_keys(PAY))) ?>
 <h3>أكثر المندوبين أوردرات</h3>
 <?= table(['المندوب', 'الأوردرات', 'خدمة التوصيل'], array_map(fn($r) => [$r['name'], N($r['n']), N($r['f'])], $top)) ?>
 <h3>أعلى العملاء مسحوبات</h3>

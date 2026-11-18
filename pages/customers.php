@@ -130,5 +130,5 @@ $shown = array_slice($G, 0, 300);
   <div><b><?= N($sf) ?></b><span>إجمالي خدمة التوصيل</span></div>
   <div><b><?= count($Dt) ?></b><span>عدد الأوردرات</span></div>
 </div>
-<?= table(['التاريخ', 'الشفت', 'البون', 'المندوب', 'القيمة', 'التوصيل', 'العنوان'], array_map(fn($o) => [$o['d'], $o['shift'], $o['bon'], $o['dname'] ?? '', N($o['val']), N($o['fee']), $o['addr']], $Dt)) ?>
+<?= table(['التاريخ', 'الشفت', 'البون', 'المندوب', 'القيمة', 'التوصيل', 'الدفع', 'العنوان'], array_map(fn($o) => [$o['d'], $o['shift'], $o['bon'], $o['dname'] ?? '', N($o['val']), N($o['fee']), pay_full($o['pay_method'] ?? 'cash') . ($o['pay_ref'] !== '' ? ' (' . $o['pay_ref'] . ')' : ''), $o['addr']], $Dt)) ?>
 <?php endif; ?>

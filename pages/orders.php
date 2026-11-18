@@ -36,8 +36,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             'out_t' => trim($_POST['o'] ?? ''),
             'ret_t' => trim($_POST['r'] ?? ''),
             'addr' => trim($_POST['a'] ?? ''),
+            'pay_method' => pay_pick($_POST['pm'] ?? 'cash'),
+            'pay_ref' => trim($_POST['pr'] ?? ''),
             'status' => isset(STATUS[$status]) ? $status : 'new',
         ];
+        if ($o['pay_method'] === 'cash') $o['pay_ref'] = '';   // المرجع للفيزا/إنستا باي فقط
         if (!valid_date($o['d']) || $o['phone'] === '') {
             $err = 'التاريخ ورقم العميل مطلوبان';
         } elseif ($o['bon'] !== '' && empty($_POST['force'])) {
@@ -57,11 +60,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $q = $db->prepare('SELECT driver_id FROM orders WHERE id=?');
                 $q->execute([$id]);
                 $oldDriver = $q->fetchColumn();
-                $db->prepare('UPDATE orders SET d=?,shift=?,bon=?,fee=?,val=?,phone=?,driver_id=?,out_t=?,ret_t=?,addr=?,status=?,customer_id=? WHERE id=?')
-                   ->execute([$o['d'], $o['shift'], $o['bon'], $o['fee'], $o['val'], $o['phone'], $o['driver_id'], $o['out_t'], $o['ret_t'], $o['addr'], $o['status'], $o['customer_id'], $id]);
+                $db->prepare('UPDATE orders SET d=?,shift=?,bon=?,fee=?,val=?,phone=?,driver_id=?,out_t=?,ret_t=?,addr=?,status=?,customer_id=?,pay_method=?,pay_ref=? WHERE id=?')
+                   ->execute([$o['d'], $o['shift'], $o['bon'], $o['fee'], $o['val'], $o['phone'], $o['driver_id'], $o['out_t'], $o['ret_t'], $o['addr'], $o['status'], $o['customer_id'], $o['pay_method'], $o['pay_ref'], $id]);
             } else {
-                $db->prepare('INSERT INTO orders(d,shift,bon,fee,val,phone,driver_id,out_t,ret_t,addr,status,created_at,customer_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)')
-                   ->execute([$o['d'], $o['shift'], $o['bon'], $o['fee'], $o['val'], $o['phone'], $o['driver_id'], $o['out_t'], $o['ret_t'], $o['addr'], $o['status'], time(), $o['customer_id']]);
+                $db->prepare('INSERT INTO orders(d,shift,bon,fee,val,phone,driver_id,out_t,ret_t,addr,status,created_at,customer_id,pay_method,pay_ref) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
+                   ->execute([$o['d'], $o['shift'], $o['bon'], $o['fee'], $o['val'], $o['phone'], $o['driver_id'], $o['out_t'], $o['ret_t'], $o['addr'], $o['status'], time(), $o['customer_id'], $o['pay_method'], $o['pay_ref']]);
                 $id = (int)$db->lastInsertId();
             }
             $msg = 'تم حفظ الأوردر';
@@ -95,10 +98,11 @@ if ($form === null && isset($_GET['edit']) && can('edit')) {
         $q->execute([$eid]);
         $r = $q->fetch();
         if ($r) $form = ['id' => $r['id'], 'd' => $r['d'], 'shift' => $r['shift'], 'bon' => $r['bon'], 'fee' => $r['fee'], 'val' => $r['val'],
-            'phone' => $r['phone'], 'driver_id' => $r['driver_id'], 'out_t' => $r['out_t'], 'ret_t' => $r['ret_t'], 'addr' => $r['addr'], 'status' => $r['status']];
+            'phone' => $r['phone'], 'driver_id' => $r['driver_id'], 'out_t' => $r['out_t'], 'ret_t' => $r['ret_t'], 'addr' => $r['addr'], 'status' => $r['status'],
+            'pay_method' => pay_pick($r['pay_method']), 'pay_ref' => $r['pay_ref']];
     }
     if ($form === null) $form = ['id' => 0, 'd' => date('Y-m-d'), 'shift' => cur_shift() ?: 'صباحي', 'bon' => '', 'fee' => 15, 'val' => '', 'phone' => '',
-        'driver_id' => null, 'out_t' => '', 'ret_t' => '', 'addr' => '', 'status' => 'new'];
+        'driver_id' => null, 'out_t' => '', 'ret_t' => '', 'addr' => '', 'status' => 'new', 'pay_method' => 'cash', 'pay_ref' => ''];
 }
 
 if ($form !== null):
@@ -130,10 +134,13 @@ if ($form !== null):
         <option value="<?= $dr['id'] ?>" <?= $dr['id'] == $form['driver_id'] ? 'selected' : '' ?>><?= h($dr['name']) ?><?= $dr['tg_chat_id'] ? ' ✈️' : '' ?></option>
       <?php endif; ?></select></label>
     <label>الحالة<select name="status"><?php foreach (STATUS as $k => $v): ?><option value="<?= $k ?>" <?= $k === $form['status'] ? 'selected' : '' ?>><?= h($v) ?></option><?php endforeach; ?></select></label>
+    <label>طريقة الدفع<?= pay_select('pm', $form['pay_method'], false, ' id="fpm"') ?></label>
+    <label id="fprw" style="<?= $form['pay_method'] === 'cash' ? 'display:none' : '' ?>">مرجع العملية (رقم الإيصال / التحويل)<input name="pr" value="<?= h($form['pay_ref']) ?>"></label>
     <label style="grid-column:1/-1">العنوان<input name="a" id="fa" value="<?= h($form['addr']) ?>"></label>
     <?= $fld('o', 'خروج (مثال 11:09)', $form['out_t']) ?>
     <?= $fld('r', 'عودة (مثال 11:24)', $form['ret_t']) ?>
   </div>
+  <p class="mu" id="fpn"></p>
   <p class="mu">✈️ = المندوب مربوط بتليجرام، وعند اختياره يوصله الأوردر فوراً بأزرار «خرجت» و«تم التسليم».</p>
   <?php if ($dupWarn): ?><label class="pm"><input type="checkbox" name="force" value="1"> السماح بتكرار رقم البون</label><?php endif; ?>
   <p><button class="btn">حفظ</button> <a class="btn g" href="index.php?p=orders">إلغاء</a></p>
@@ -166,6 +173,13 @@ if ($form !== null):
       } else { fc.textContent = '(عميل جديد — هيتكوّد تلقائياً)'; }
     } catch (e) {}
   }
+  const pm = document.getElementById('fpm'), prw = document.getElementById('fprw'), fpn = document.getElementById('fpn');
+  function payUi() {
+    const cash = pm.value === 'cash';
+    prw.style.display = cash ? 'none' : '';
+    fpn.textContent = cash ? '💵 كاش: المندوب يحصّل (القيمة + التوصيل) من العميل وتُحسب عهدة عليه.' : '✅ مدفوع إلكترونياً: لا يحصّل المندوب شيئاً ولا تُحسب عهدة عليه، وبتظهر للمندوب على تليجرام «مدفوع مسبقاً».';
+  }
+  pm.addEventListener('change', payUi); payUi();
   fp.addEventListener('change', fill);
   fp.addEventListener('blur', fill);
 })();
@@ -177,10 +191,11 @@ endif;
 // ---------- القائمة ----------
 $w = []; $a = [];
 date_where($w, $a, 'o.d');
-$fs = cur_shift() ?: ($_GET['s'] ?? ''); $fm = (int)($_GET['m'] ?? 0); $fq = trim($_GET['q'] ?? ''); $fst = $_GET['st'] ?? '';
+$fs = cur_shift() ?: ($_GET['s'] ?? ''); $fm = (int)($_GET['m'] ?? 0); $fq = trim($_GET['q'] ?? ''); $fst = $_GET['st'] ?? ''; $fpm = $_GET['pm'] ?? '';
 if (in_array($fs, ['صباحي', 'مسائي'], true)) { $w[] = 'o.shift=?'; $a[] = $fs; }
 if ($fm) { $w[] = 'o.driver_id=?'; $a[] = $fm; }
 if (isset(STATUS[$fst])) { $w[] = 'o.status=?'; $a[] = $fst; }
+if (pay_ok($fpm)) { $w[] = 'o.pay_method=?'; $a[] = $fpm; }
 if ($fq !== '') {
     $w[] = '(o.phone LIKE ? OR o.bon LIKE ? OR o.addr LIKE ? OR cu.name LIKE ? OR cu.code LIKE ?)';
     $like = '%' . $fq . '%';
@@ -193,6 +208,12 @@ $q = $db->prepare("SELECT COUNT(*) n, COALESCE(SUM(o.val),0) v, COALESCE(SUM(o.f
 $q->execute($a);
 $T = $q->fetch();
 
+// ملخص حسب طريقة الدفع (بنفس الفلاتر)
+$q = $db->prepare("SELECT o.pay_method pm, COUNT(*) n, COALESCE(SUM(o.val+o.fee),0) t $base GROUP BY o.pay_method");
+$q->execute($a);
+$PM = array_fill_keys(array_keys(PAY), ['n' => 0, 't' => 0]);
+foreach ($q->fetchAll() as $r) $PM[pay_pick($r['pm'])] = ['n' => (int)$r['n'], 't' => (float)$r['t']];
+
 $order = 'ORDER BY o.d DESC, CAST(o.bon AS INTEGER) DESC, o.id DESC';
 $cols = 'o.*, dr.name AS dname, dr.tg_chat_id AS dtg, cu.name AS cname, cu.code AS ccode';
 $export = isset($_GET['export']) && can('export');
@@ -203,8 +224,8 @@ $q = $db->prepare($sql);
 $q->execute($a);
 $L = $q->fetchAll();
 
-$heads = ['التاريخ', 'الشفت', 'البون', 'كود', 'الاسم', 'العميل', 'المندوب', 'القيمة', 'التوصيل', 'الإجمالي', 'خروج', 'عودة', 'العنوان', 'الحالة'];
-$rows = array_map(fn($o) => [$o['d'], $o['shift'], $o['bon'], $o['ccode'] ?? '', $o['cname'] ?? '', $o['phone'], $o['dname'] ?? '', N($o['val']), N($o['fee']), N($o['val'] + $o['fee']),
+$heads = ['التاريخ', 'الشفت', 'البون', 'كود', 'الاسم', 'العميل', 'المندوب', 'القيمة', 'التوصيل', 'الإجمالي', 'طريقة الدفع', 'مرجع الدفع', 'خروج', 'عودة', 'العنوان', 'الحالة'];
+$rows = array_map(fn($o) => [$o['d'], $o['shift'], $o['bon'], $o['ccode'] ?? '', $o['cname'] ?? '', $o['phone'], $o['dname'] ?? '', N($o['val']), N($o['fee']), N($o['val'] + $o['fee']), pay_label($o['pay_method']), $o['pay_ref'],
     $o['out_t'], $o['ret_t'], $o['addr'], STATUS[$o['status']] ?? ''], $L);
 if ($export) csv_out('orders', $heads, $rows);
 ?>
@@ -214,6 +235,7 @@ if ($export) csv_out('orders', $heads, $rows);
   <?php if (cur_shift() === ''): ?><label>الشفت<select name="s"><option value="">الكل</option><?php foreach (['صباحي', 'مسائي'] as $x): ?><option <?= $x === $fs ? 'selected' : '' ?>><?= $x ?></option><?php endforeach; ?></select></label><?php endif; ?>
   <label>المندوب<select name="m"><option value="">الكل</option><?php foreach ($drivers as $dr): ?><option value="<?= $dr['id'] ?>" <?= $dr['id'] == $fm ? 'selected' : '' ?>><?= h($dr['name']) ?></option><?php endforeach; ?></select></label>
   <label>الحالة<select name="st"><option value="">الكل</option><?php foreach (STATUS as $k => $v): ?><option value="<?= $k ?>" <?= $k === $fst ? 'selected' : '' ?>><?= h($v) ?></option><?php endforeach; ?></select></label>
+  <label>طريقة الدفع<?= pay_select('pm', $fpm, true) ?></label>
   <label>بحث (رقم/اسم/كود/بون/عنوان)<input name="q" value="<?= h($fq) ?>"></label>
   <button class="btn">عرض</button>
   <a class="btn g" href="index.php?p=orders">مسح الفلتر</a>
@@ -224,6 +246,7 @@ if ($export) csv_out('orders', $heads, $rows);
   <div><b><?= N($T['n']) ?></b><span>عدد الأوردرات</span></div>
   <div><b><?= N($T['v']) ?></b><span>قيمة الأوردرات</span></div>
   <div><b><?= N($T['f']) ?></b><span>خدمة التوصيل</span></div>
+  <?php foreach (PAY as $k => $v): ?><div><b><?= N($PM[$k]['t']) ?></b><span><?= PAY_ICON[$k] ?> <?= h($v) ?> (<?= (int)$PM[$k]['n'] ?> أوردر)</span></div><?php endforeach; ?>
 </div>
 <?= table($heads, $rows, function ($i, $r) use ($L) {
     $o = $L[$i];

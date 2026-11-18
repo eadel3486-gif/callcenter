@@ -15,6 +15,18 @@ const PERMS = [
     ['del', 'حذف'], ['pay', 'تسجيل دفعات'], ['export', 'تصدير وطباعة'],
 ];
 const STATUS = ['new' => 'بانتظار المندوب', 'out' => 'خرج للتوصيل', 'done' => 'تم التسليم'];
+// طرق الدفع: كاش يحصّله المندوب من العميل، وفيزا/إنستا باي مدفوعة إلكترونياً (لا عهدة على المندوب)
+const PAY = ['cash' => 'كاش', 'visa' => 'فيزا', 'instapay' => 'إنستا باي'];
+const PAY_ICON = ['cash' => '💵', 'visa' => '💳', 'instapay' => '📲'];
+function pay_ok($k) { return is_string($k) && isset(PAY[$k]); }
+function pay_pick($k) { return pay_ok($k) ? $k : 'cash'; }
+function pay_label($k) { return PAY[$k] ?? PAY['cash']; }
+function pay_full($k) { $k = pay_pick($k); return PAY_ICON[$k] . ' ' . PAY[$k]; }
+function pay_select($name, $cur, $all = false, $attrs = '') {
+    $o = '<select name="' . h($name) . '"' . $attrs . '>' . ($all ? '<option value="">الكل</option>' : '');
+    foreach (PAY as $k => $v) $o .= '<option value="' . $k . '"' . ($k === $cur ? ' selected' : '') . '>' . PAY_ICON[$k] . ' ' . h($v) . '</option>';
+    return $o . '</select>';
+}
 
 // ===================== أدوات عامة =====================
 function h($s) { return htmlspecialchars((string)$s, ENT_QUOTES, 'UTF-8'); }
@@ -156,6 +168,14 @@ function migrate(PDO $db) {
     $has = false;
     foreach ($db->query('PRAGMA table_info(users)')->fetchAll() as $c) if ($c['name'] === 'shift') $has = true;
     if (!$has) $db->exec("ALTER TABLE users ADD COLUMN shift TEXT NOT NULL DEFAULT ''");
+    // طريقة الدفع: في الأوردرات (كاش/فيزا/إنستا باي + مرجع العملية) وفي دفعات المناديب
+    foreach ([['orders', 'pay_method', "TEXT NOT NULL DEFAULT 'cash'"], ['orders', 'pay_ref', "TEXT NOT NULL DEFAULT ''"],
+              ['payments', 'method', "TEXT NOT NULL DEFAULT 'cash'"]] as [$t, $col, $def]) {
+        $has = false;
+        foreach ($db->query("PRAGMA table_info($t)")->fetchAll() as $c) if ($c['name'] === $col) $has = true;
+        if (!$has) $db->exec("ALTER TABLE $t ADD COLUMN $col $def");
+    }
+    $db->exec('CREATE INDEX IF NOT EXISTS ix_o_pay ON orders(pay_method)');
     // ربط الأوردرات بسجل العملاء (customer_id)
     $has = false;
     foreach ($db->query('PRAGMA table_info(orders)')->fetchAll() as $c) if ($c['name'] === 'customer_id') $has = true;
@@ -371,7 +391,15 @@ function order_msg(array $o) {
     $t .= '📅 ' . h($o['d']) . ' — ' . h($o['shift']) . "\n";
     $t .= '📞 العميل: ' . h($o['phone']) . "\n";
     if ($o['addr'] !== '') $t .= '📍 العنوان: ' . h($o['addr']) . "\n";
-    $t .= '💵 القيمة: ' . N($o['val']) . ' + توصيل ' . N($o['fee']) . ' = <b>' . N((float)$o['val'] + (float)$o['fee']) . "</b> ج\n";
+    $tot = (float)$o['val'] + (float)$o['fee'];
+    $t .= '💵 القيمة: ' . N($o['val']) . ' + توصيل ' . N($o['fee']) . ' = <b>' . N($tot) . "</b> ج\n";
+    $pm = pay_pick($o['pay_method'] ?? 'cash');
+    if ($pm === 'cash') {
+        $t .= '💵 الدفع: <b>كاش</b> — حصّل من العميل <b>' . N($tot) . "</b> ج\n";
+    } else {
+        $t .= PAY_ICON[$pm] . ' الدفع: <b>' . h(PAY[$pm]) . '</b> — ✅ مدفوع مسبقاً، <b>لا تحصّل أي مبلغ</b> من العميل'
+            . (($o['pay_ref'] ?? '') !== '' ? ' (مرجع: ' . h($o['pay_ref']) . ')' : '') . "\n";
+    }
     $t .= 'الحالة: ' . (STATUS[$o['status']] ?? '');
     return $t;
 }
