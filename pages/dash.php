@@ -24,7 +24,7 @@ $M = $st->fetch();
 $q = $db->prepare('SELECT dr.name, COUNT(*) n, SUM(o.fee) f FROM orders o JOIN drivers dr ON dr.id=o.driver_id WHERE o.d LIKE ?' . str_replace('shift', 'o.shift', $sAnd) . ' GROUP BY dr.id ORDER BY n DESC LIMIT 5');
 $q->execute(array_merge([$like], $sa));
 $top = $q->fetchAll();
-$q = $db->prepare("SELECT o.phone, c.name, COUNT(*) n, SUM(o.val) v FROM orders o LEFT JOIN customers c ON c.id=o.customer_id WHERE o.d LIKE ?" . str_replace('shift', 'o.shift', $sAnd) . " GROUP BY o.phone ORDER BY v DESC LIMIT 5");
+$q = $db->prepare("SELECT COALESCE(c.phone, o.phone) AS phone, c.name, COUNT(*) n, SUM(o.val) v FROM orders o LEFT JOIN customers c ON c.id=o.customer_id WHERE o.d LIKE ?" . str_replace('shift', 'o.shift', $sAnd) . " GROUP BY COALESCE(o.customer_id, o.phone) ORDER BY v DESC LIMIT 5");
 $q->execute(array_merge([$like], $sa));
 $tc = $q->fetchAll();
 

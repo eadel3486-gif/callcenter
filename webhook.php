@@ -95,7 +95,7 @@ if (!$dr) { tg_send($chat, 'حسابك غير مربوط. ابعت كود الر
 
 // ---------- الأوردرات الجارية ----------
 if ($text === '/orders' || $text === '📋 أوردراتي') {
-    $s = $db->prepare("SELECT * FROM orders WHERE driver_id=? AND status IN ('new','out') ORDER BY id LIMIT 10");
+    $s = $db->prepare("SELECT o.*,c.phone2,c.notes AS customer_notes,c.problem AS customer_problem FROM orders o LEFT JOIN customers c ON c.id=o.customer_id WHERE o.driver_id=? AND o.status IN ('new','out') ORDER BY o.id LIMIT 10");
     $s->execute([$dr['id']]);
     $L = $s->fetchAll();
     if (!$L) tg_send($chat, 'لا توجد أوردرات جارية حالياً ✅', driver_keyboard());

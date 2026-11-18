@@ -24,13 +24,22 @@ if ($a === 'customer' || $a === 'customers') {
     if (!me() || !(can('orders') || can('edit'))) jout(['error' => 'forbidden'], 403);
     $db = db();
     if ($a === 'customer') {
-        $s = $db->prepare('SELECT code,name,phone,address FROM customers WHERE phone=?');
-        $s->execute([trim((string)($_GET['phone'] ?? ''))]);
-        jout(['customer' => $s->fetch() ?: null]);
+        $ph = trim((string)($_GET['phone'] ?? ''));
+        $s = $db->prepare("SELECT id,code,name,phone,phone2,address,address2,notes,problem FROM customers WHERE phone=? OR (phone2<>'' AND phone2=?)");
+        $s->execute([$ph, $ph]);
+        $c = $s->fetch();
+        if ($c) {
+            $h = $db->prepare('SELECT id,d,bon,val,fee,status,addr FROM orders WHERE customer_id=? ORDER BY d DESC,id DESC LIMIT 3');
+            $h->execute([(int)$c['id']]); $last = $h->fetchAll();
+            $st = $db->prepare('SELECT COUNT(*) n, MAX(d) last_order FROM orders WHERE customer_id=?');
+            $st->execute([(int)$c['id']]); $stats = $st->fetch();
+            jout(['customer'=>$c,'stats'=>$stats,'last_orders'=>$last]);
+        }
+        jout(['customer'=>null,'stats'=>null,'last_orders'=>[]]);
     }
     $q = '%' . trim((string)($_GET['q'] ?? '')) . '%';
-    $s = $db->prepare('SELECT code,name,phone,address FROM customers WHERE phone LIKE ? OR name LIKE ? OR code LIKE ? ORDER BY name, phone LIMIT 8');
-    $s->execute([$q, $q, $q]);
+    $s = $db->prepare('SELECT code,name,phone,phone2,address,address2 FROM customers WHERE phone LIKE ? OR phone2 LIKE ? OR name LIKE ? OR code LIKE ? ORDER BY name, phone LIMIT 8');
+    $s->execute([$q, $q, $q, $q]);
     jout(['customers' => $s->fetchAll()]);
 }
 

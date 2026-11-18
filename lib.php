@@ -180,6 +180,18 @@ function migrate(PDO $db) {
     $has = false;
     foreach ($db->query('PRAGMA table_info(orders)')->fetchAll() as $c) if ($c['name'] === 'customer_id') $has = true;
     if (!$has) $db->exec('ALTER TABLE orders ADD COLUMN customer_id INTEGER');
+    // رقم موبايل تاني وعنوان تاني للعميل (اختياريين)
+    foreach ([['customers', 'phone2', "TEXT NOT NULL DEFAULT ''"], ['customers', 'address2', "TEXT NOT NULL DEFAULT ''"]] as [$t, $col, $def]) {
+        $has = false;
+        foreach ($db->query("PRAGMA table_info($t)")->fetchAll() as $c) if ($c['name'] === $col) $has = true;
+        if (!$has) $db->exec("ALTER TABLE $t ADD COLUMN $col $def");
+    }
+    // بيانات العميل الإضافية والمنطقة داخل الأوردر
+    foreach ([['customers','notes',"TEXT NOT NULL DEFAULT ''"],['customers','problem',"INTEGER NOT NULL DEFAULT 0"],['orders','area',"TEXT NOT NULL DEFAULT ''"]] as [$t,$col,$def]) {
+        $has = false;
+        foreach ($db->query("PRAGMA table_info($t)")->fetchAll() as $c) if ($c['name'] === $col) $has = true;
+        if (!$has) $db->exec("ALTER TABLE $t ADD COLUMN $col $def");
+    }
     // تكويد العملاء الحاليين من الأوردرات (مرة واحدة لو الجدول فاضي)
     if ((int)$db->query('SELECT COUNT(*) FROM customers')->fetchColumn() === 0
         && (int)$db->query('SELECT COUNT(*) FROM orders')->fetchColumn() > 0) {
@@ -211,13 +223,14 @@ function migrate(PDO $db) {
     }
 }
 
-// ينشئ العميل (بكود تلقائي) لو مش موجود، ويحدّث الاسم/العنوان لو اتبعتوا. يرجع صف العميل.
+// ينشئ العميل (بكود تلقائي) لو مش موجود (البحث بالرقم الأساسي أو التاني)، ويحدّث الاسم/العنوان لو اتبعتوا. يرجع صف العميل.
+// العنوان الجديد (غير المسجّل) بيتحفظ في أول خانة فاضية: العنوان ثم العنوان التاني، ولو الاتنين ممتلئين بيحل محل التاني.
 function ensure_customer($phone, $name = '', $addr = '') {
     $phone = trim((string)$phone);
     if ($phone === '') return null;
     $db = db();
-    $s = $db->prepare('SELECT * FROM customers WHERE phone=?');
-    $s->execute([$phone]);
+    $s = $db->prepare("SELECT * FROM customers WHERE phone=? OR (phone2<>'' AND phone2=?)");
+    $s->execute([$phone, $phone]);
     $c = $s->fetch();
     $name = trim((string)$name); $addr = trim((string)$addr);
     if (!$c) {
@@ -225,11 +238,16 @@ function ensure_customer($phone, $name = '', $addr = '') {
         $id = (int)$db->lastInsertId();
         $db->prepare("UPDATE customers SET code='C'||substr('0000'||id,-4) WHERE id=?")->execute([$id]);
     } else {
-        if ($name !== '' && $name !== $c['name']) $db->prepare('UPDATE customers SET name=? WHERE id=?')->execute([$name, $c['id']]);
-        if ($addr !== '' && $addr !== $c['address']) $db->prepare('UPDATE customers SET address=? WHERE id=?')->execute([$addr, $c['id']]);
+        $id = (int)$c['id'];
+        if ($name !== '' && $name !== $c['name']) $db->prepare('UPDATE customers SET name=? WHERE id=?')->execute([$name, $id]);
+        if ($addr !== '' && $addr !== $c['address'] && $addr !== $c['address2']) {
+            $col = $c['address'] === '' ? 'address' : 'address2';
+            $db->prepare("UPDATE customers SET $col=? WHERE id=?")->execute([$addr, $id]);
+        }
     }
-    $s->execute([$phone]);
-    return $s->fetch();
+    $g = $db->prepare('SELECT * FROM customers WHERE id=?');
+    $g->execute([$id]);
+    return $g->fetch();
 }
 
 // الشيفت الحالي المختار في الواجهة ('' = الكل)
@@ -389,7 +407,15 @@ function driver_keyboard() {
 function order_msg(array $o) {
     $t = '📦 <b>أوردر' . ($o['bon'] !== '' ? ' #' . h($o['bon']) : '') . "</b>\n";
     $t .= '📅 ' . h($o['d']) . ' — ' . h($o['shift']) . "\n";
-    $t .= '📞 العميل: ' . h($o['phone']) . "\n";
+    $ph1 = preg_replace('/[^0-9+]/', '', (string)$o['phone']);
+    $t .= '📞 العميل: ' . h($o['phone']) . ' — <a href="tel:' . h($ph1) . '">اتصال مباشر</a>' . "\n";
+    if (!empty($o['phone2']) && $o['phone2'] !== $o['phone']) {
+        $ph2 = preg_replace('/[^0-9+]/', '', (string)$o['phone2']);
+        $t .= '📞 رقم بديل: ' . h($o['phone2']) . ' — <a href="tel:' . h($ph2) . '">اتصال مباشر</a>' . "\n";
+    }
+    if (!empty($o['customer_notes'])) $t .= '📝 ملاحظات العميل: ' . h($o['customer_notes']) . "\n";
+    if (!empty($o['customer_problem'])) $t .= '⚠️ <b>عميل مشكلة — خذ بالك</b>\n';
+    if (!empty($o['area'])) $t .= '🗺️ المنطقة: ' . h($o['area']) . "\n";
     if ($o['addr'] !== '') $t .= '📍 العنوان: ' . h($o['addr']) . "\n";
     $tot = (float)$o['val'] + (float)$o['fee'];
     $t .= '💵 القيمة: ' . N($o['val']) . ' + توصيل ' . N($o['fee']) . ' = <b>' . N($tot) . "</b> ج\n";
@@ -415,7 +441,7 @@ function order_markup(array $o) {
 
 // يرسل الأوردر للمندوب على تليجرام. يرجع true لو اتبعت.
 function notify_order($orderId) {
-    $s = db()->prepare('SELECT o.*, dr.tg_chat_id FROM orders o JOIN drivers dr ON dr.id=o.driver_id WHERE o.id=?');
+    $s = db()->prepare('SELECT o.*, dr.tg_chat_id, cu.phone2, cu.notes AS customer_notes, cu.problem AS customer_problem FROM orders o JOIN drivers dr ON dr.id=o.driver_id LEFT JOIN customers cu ON cu.id=o.customer_id WHERE o.id=?');
     $s->execute([(int)$orderId]);
     $o = $s->fetch();
     if (!$o || empty($o['tg_chat_id'])) return false;

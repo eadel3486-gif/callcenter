@@ -2,6 +2,12 @@
 defined('APP') || exit;
 $tokenFromEnv = cfg('tg_token') !== '';
 $webhook = base_url() . '/webhook.php';
+if (($_GET['download'] ?? '') === 'backup' && me() && me()['admin']) {
+    $db=db(); $src=cfg('db_path'); $tmp=sys_get_temp_dir().'/callcenter-backup-'.bin2hex(random_bytes(5)).'.sqlite';
+    $safe=str_replace("'","''",$tmp); $db->exec("VACUUM INTO '$safe'");
+    while(ob_get_level()) ob_end_clean(); header('Content-Type: application/vnd.sqlite3'); header('Content-Disposition: attachment; filename=callcenter-backup-'.date('Y-m-d-His').'.sqlite'); header('Content-Length: '.filesize($tmp)); readfile($tmp); @unlink($tmp); exit;
+}
+
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     csrf_check();
@@ -32,6 +38,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $db->commit();
             flash('تم مسح الأوردرات والعملاء والمناديب والدفعات والمواقع. المستخدمون وإعدادات البوت محفوظين.');
         }
+    } elseif ($act === 'zones') {
+        $names=$_POST['zone_name']??[]; $fees=$_POST['zone_fee']??[]; $z=[];
+        foreach($names as $i=>$name){$name=trim($name);$fee=(float)($fees[$i]??0);if($name!=='' && $fee>=0)$z[$name]=$fee;}
+        set_setting('delivery_zones',json_encode($z,JSON_UNESCAPED_UNICODE)); flash('تم حفظ أسعار التوصيل حسب المنطقة');
     } elseif ($act === 'unhook') {
         $r = tg('deleteWebhook');
         flash(!empty($r['ok']) ? 'تم إيقاف الويبهوك' : 'فشل: ' . ($r['description'] ?? ''), !empty($r['ok']) ? 'ok' : 'err');
@@ -82,3 +92,11 @@ $wi = $info['result'] ?? null;
   <p>من صفحة «المندوبون» اضغط «ربط تليجرام» عند كل مندوب، وسلّمه الكود أو الرابط. بعد ما يبعت الكود للبوت يظهر «مربوط ✈️».</p>
   <p>لإظهار موقعه على الخريطة: في محادثة البوت يضغط 📎 ← الموقع ← <b>مشاركة الموقع الحي</b> ← يختار المدة (8 ساعات). أو يستخدم رابط المتصفح الخاص به.</p>
 </div>
+
+<div class="u">
+  <h3 style="margin-top:0">أسعار التوصيل حسب المنطقة</h3>
+  <p class="mu">أضف المناطق وسعر التوصيل لكل منطقة. عند اختيار المنطقة في الأوردر يتحدد السعر تلقائياً ويمكن تعديله يدوياً.</p>
+  <?php $zones=json_decode(get_setting('delivery_zones'),true) ?: []; if(!$zones)$zones=['وسط البلد'=>15]; ?>
+  <form method="post" id="zonesForm"><?= csrf_field() ?><input type="hidden" name="act" value="zones"><div id="zoneRows"><?php foreach($zones as $zn=>$zf): ?><div class="fb"><input name="zone_name[]" placeholder="اسم المنطقة" value="<?= h($zn) ?>"><input type="number" step="any" min="0" name="zone_fee[]" placeholder="السعر" value="<?= h($zf) ?>"><button type="button" class="btn r" onclick="this.parentNode.remove()">حذف</button></div><?php endforeach; ?></div><button type="button" class="btn g" onclick="document.getElementById('zoneRows').insertAdjacentHTML('beforeend','<div class=\"fb\"><input name=\"zone_name[]\" placeholder=\"اسم المنطقة\"><input type=\"number\" step=\"any\" min=\"0\" name=\"zone_fee[]\" placeholder=\"السعر\"><button type=\"button\" class=\"btn r\" onclick=\"this.parentNode.remove()\">حذف</button></div>')">+ منطقة</button> <button class="btn">حفظ الأسعار</button></form>
+</div>
+<div class="u"><h3 style="margin-top:0">نسخة احتياطية من قاعدة البيانات</h3><p class="mu">ينزّل نسخة SQLite متسقة من قاعدة البيانات الحالية. احتفظ بالنسخة خارج الاستضافة، خصوصاً على Railway لأن التخزين المحلي قد يكون مؤقتاً حسب إعدادات الـ Volume.</p><a class="btn" href="index.php?p=settings&download=backup">⬇️ تنزيل نسخة احتياطية الآن</a></div>

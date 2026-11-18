@@ -11,28 +11,58 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $name = trim($_POST['name'] ?? '');
         $phone = trim($_POST['phone'] ?? '');
         $addr = trim($_POST['addr'] ?? '');
+        $phone2 = trim($_POST['phone2'] ?? '');
+        $addr2 = trim($_POST['addr2'] ?? '');
+        $notes = trim($_POST['notes'] ?? ''); $problem = !empty($_POST['problem']) ? 1 : 0;
         if ($phone === '') {
             flash('رقم العميل مطلوب', 'err');
             redirect(qs(['ec' => $id ?: 0]));
         }
-        $dup = $db->prepare('SELECT id FROM customers WHERE phone=? AND id<>?');
-        $dup->execute([$phone, $id]);
+        if ($phone2 !== '' && $phone2 === $phone) {
+            flash('الرقم التاني نفس الرقم الأساسي', 'err');
+            redirect(qs(['ec' => $id ?: 0]));
+        }
+        // الرقمين (الأساسي والتاني) ما ينفعش يكونوا مسجلين عند عميل آخر
+        $nums = array_values(array_filter([$phone, $phone2], fn($x) => $x !== ''));
+        $ph = implode(',', array_fill(0, count($nums), '?'));
+        $dup = $db->prepare("SELECT id FROM customers WHERE id<>? AND (phone IN ($ph) OR phone2 IN ($ph))");
+        $dup->execute(array_merge([$id], $nums, $nums));
         if ($dup->fetchColumn()) {
-            flash('الرقم ده مسجّل لعميل آخر', 'err');
+            flash('أحد الرقمين مسجّل لعميل آخر', 'err');
             redirect(qs(['ec' => $id ?: 0]));
         }
         if ($id) {
-            $q = $db->prepare('SELECT phone FROM customers WHERE id=?');
+            $q = $db->prepare('SELECT phone, phone2 FROM customers WHERE id=?');
             $q->execute([$id]);
-            $old = $q->fetchColumn();
-            $db->prepare('UPDATE customers SET name=?, phone=?, address=? WHERE id=?')->execute([$name, $phone, $addr, $id]);
-            if ($old !== false && $old !== $phone) $db->prepare('UPDATE orders SET phone=? WHERE phone=?')->execute([$phone, $old]);
+            $old = $q->fetch();
+            $db->prepare('UPDATE customers SET name=?, phone=?, address=?, phone2=?, address2=?, notes=?, problem=? WHERE id=?')->execute([$name, $phone, $addr, $phone2, $addr2, $notes, $problem, $id]);
+            // لو رقم اتغيّر، يتغيّر كمان في أوردرات العميل السابقة
+            if ($old) foreach ([[$old['phone'], $phone], [$old['phone2'], $phone2]] as [$o, $n])
+                if ($o !== '' && $n !== '' && $o !== $n) $db->prepare('UPDATE orders SET phone=? WHERE customer_id=? AND phone=?')->execute([$n, $id, $o]);
             flash('تم حفظ بيانات العميل');
         } else {
-            ensure_customer($phone, $name, $addr);
+            $c = ensure_customer($phone, $name, $addr);
+            if ($c) $db->prepare('UPDATE customers SET phone2=?, address2=?, notes=?, problem=? WHERE id=?')->execute([$phone2, $addr2, $notes, $problem, $c['id']]);
             flash('تمت إضافة العميل وتكويده');
         }
         redirect(qs(['ec' => null]));
+    } elseif ($act === 'merge' && can('edit')) {
+        $keep=(int)($_POST['keep_id']??0); $remove=(int)($_POST['remove_id']??0);
+        if (!$keep || !$remove || $keep===$remove) flash('اختر عميلين مختلفين للدمج','err');
+        else {
+            $db->beginTransaction();
+            $a=$db->prepare('SELECT * FROM customers WHERE id=?'); $a->execute([$keep]); $main=$a->fetch();
+            $b=$db->prepare('SELECT * FROM customers WHERE id=?'); $b->execute([$remove]); $other=$b->fetch();
+            if (!$main || !$other) { $db->rollBack(); flash('أحد العميلين غير موجود','err'); }
+            else {
+                $phones=array_values(array_unique(array_filter([$main['phone'],$main['phone2'],$other['phone'],$other['phone2']])));
+                $p1=$main['phone']; $p2=''; foreach($phones as $ph) if($ph!==$p1){$p2=$ph;break;}
+                $db->prepare('UPDATE orders SET customer_id=? WHERE customer_id=?')->execute([$keep,$remove]);
+                $db->prepare("UPDATE customers SET phone=?,phone2=?,name=CASE WHEN name='' THEN ? ELSE name END,address=CASE WHEN address='' THEN ? ELSE address END,address2=CASE WHEN address2='' THEN ? ELSE address2 END,notes=TRIM(CASE WHEN notes='' THEN ? WHEN ?='' THEN notes ELSE notes||char(10)||? END),problem=MAX(problem,?) WHERE id=?")->execute([$p1,$p2,$other['name'],$other['address'],$other['address2'],$other['notes'],$other['notes'],$other['notes'],$other['problem'],$keep]);
+                $db->prepare('DELETE FROM customers WHERE id=?')->execute([$remove]); $db->commit(); flash('تم دمج العميلين ونقل كل الأوردرات للسجل الأساسي');
+            }
+        }
+        redirect('index.php?p=customers');
     } elseif ($act === 'delete' && can('del')) {
         $cnt = $db->prepare('SELECT COUNT(*) FROM orders WHERE customer_id=?');
         $cnt->execute([$id]);
@@ -45,7 +75,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 // ---------- فورم إضافة/تعديل ----------
 if (isset($_GET['ec']) && can('edit')):
     $ec = (int)$_GET['ec'];
-    $row = ['id' => 0, 'code' => '', 'name' => '', 'phone' => '', 'address' => ''];
+    $row = ['id' => 0, 'code' => '', 'name' => '', 'phone' => '', 'address' => '', 'phone2' => '', 'address2' => '', 'notes'=>'', 'problem'=>0];
     if ($ec) {
         $q = $db->prepare('SELECT * FROM customers WHERE id=?');
         $q->execute([$ec]);
@@ -56,8 +86,12 @@ if (isset($_GET['ec']) && can('edit')):
   <?= csrf_field() ?><input type="hidden" name="act" value="save"><input type="hidden" name="id" value="<?= (int)$row['id'] ?>">
   <h3 style="margin-top:0"><?= $row['id'] ? 'تعديل العميل ' . h($row['code']) : 'عميل جديد' ?></h3>
   <label>الاسم<input name="name" value="<?= h($row['name']) ?>"></label>
-  <label>رقم الموبايل<input name="phone" value="<?= h($row['phone']) ?>"></label>
-  <label>العنوان<input name="addr" value="<?= h($row['address']) ?>"></label>
+  <label>رقم الموبايل (الأساسي)<input name="phone" value="<?= h($row['phone']) ?>"></label>
+  <label>رقم موبايل تاني (اختياري)<input name="phone2" value="<?= h($row['phone2'] ?? '') ?>"></label>
+  <label>العنوان (الأساسي)<input name="addr" value="<?= h($row['address']) ?>"></label>
+  <label>عنوان تاني (اختياري)<input name="addr2" value="<?= h($row['address2'] ?? '') ?>"></label>
+  <label>ملاحظات للمندوب<textarea name="notes" rows="3"><?= h($row['notes'] ?? '') ?></textarea></label>
+  <label class="pm"><input type="checkbox" name="problem" value="1" <?= !empty($row['problem'])?'checked':'' ?>> ⚠️ عميل مشكلة</label>
   <?php if ($row['id']): ?><p class="mu">لو غيّرت الرقم، بيتغيّر كمان في كل أوردرات العميل السابقة.</p><?php else: ?><p class="mu">الكود بيتولّد تلقائياً (C0001، C0002…).</p><?php endif; ?>
   <p><button class="btn">حفظ</button> <a class="btn g" href="<?= h(qs(['ec' => null])) ?>">إلغاء</a></p>
 </form>
@@ -75,9 +109,9 @@ $filtered = (bool)$ow;   // لو فيه شيفت/تاريخ: اعرض فقط م�
 $fq = trim($_GET['q'] ?? '');
 $cw = []; $ca = [];
 if ($fq !== '') {
-    $cw[] = '(c.phone LIKE ? OR c.name LIKE ? OR c.code LIKE ? OR c.address LIKE ?)';
+    $cw[] = '(c.phone LIKE ? OR c.phone2 LIKE ? OR c.name LIKE ? OR c.code LIKE ? OR c.address LIKE ? OR c.address2 LIKE ?)';
     $like = '%' . $fq . '%';
-    array_push($ca, $like, $like, $like, $like);
+    array_push($ca, $like, $like, $like, $like, $like, $like);
 }
 if ($filtered && empty($_GET['all'])) $cw[] = 's.n > 0';
 $cWhere = $cw ? 'WHERE ' . implode(' AND ', $cw) : '';
@@ -90,8 +124,8 @@ $q = $db->prepare($sql);
 $q->execute(array_merge($oa, $ca));
 $G = $q->fetchAll();
 
-$heads = ['الكود', 'الاسم', 'رقم العميل', 'العنوان', 'الأوردرات', 'المسحوبات', 'التوصيل', 'آخر طلب'];
-$rows = array_map(fn($g) => [$g['code'], $g['name'], $g['phone'], $g['address'], N($g['n']), N($g['v']), N($g['f']), $g['l'] ?? ''], $G);
+$heads = ['الكود', 'الاسم', 'رقم العميل', 'رقم تاني', 'العنوان', 'عنوان تاني', 'الأوردرات', 'المسحوبات', 'التوصيل', 'آخر طلب'];
+$rows = array_map(fn($g) => [$g['code'], $g['name'], $g['phone'], $g['phone2'], $g['address'], $g['address2'], N($g['n']), N($g['v']), N($g['f']), $g['l'] ?? ''], $G);
 if (isset($_GET['export']) && can('export')) csv_out('customers', $heads, $rows);
 $cu = trim($_GET['cu'] ?? '');
 $shown = array_slice($G, 0, 300);
@@ -105,6 +139,7 @@ $shown = array_slice($G, 0, 300);
   <?php if (can('edit')): ?><a class="btn" href="<?= h(qs(['ec' => 0])) ?>">+ عميل جديد</a><?php endif; ?>
   <?php if (can('export')): ?><a class="btn g" href="<?= h(qs(['export' => 1])) ?>">تصدير CSV</a><button type="button" class="btn g" onclick="window.print()">طباعة</button><?php endif; ?>
 </form>
+<?php if (can('edit') && count($G)>1): ?><form method="post" class="fb u no" onsubmit="return confirm('دمج السجلين ونقل كل الأوردرات؟')"><?= csrf_field() ?><input type="hidden" name="act" value="merge"><b>دمج عميلين مكررين</b><label>السجل الأساسي (سيظل موجوداً)<select name="keep_id" required><?php foreach($G as $c): ?><option value="<?= (int)$c['id'] ?>"><?= h($c['code'].' — '.$c['name'].' — '.$c['phone']) ?></option><?php endforeach; ?></select></label><label>السجل المكرر (سيتم حذفه بعد نقل الأوردرات)<select name="remove_id" required><?php foreach($G as $c): ?><option value="<?= (int)$c['id'] ?>"><?= h($c['code'].' — '.$c['name'].' — '.$c['phone']) ?></option><?php endforeach; ?></select></label><button class="btn">دمج السجلين</button></form><?php endif; ?>
 <p class="mu"><?= count($G) ?> عميل<?= cur_shift() !== '' ? ' — إحصائيات شيفت ' . h(cur_shift()) . ' فقط' : '' ?><?= count($G) > 300 ? ' (معروض أول 300 — التصدير يشمل الكل)' : '' ?></p>
 <?= table($heads, array_slice($rows, 0, 300), function ($i) use ($shown) {
     $g = $shown[$i];
@@ -115,16 +150,18 @@ $shown = array_slice($G, 0, 300);
     return $s;
 }) ?>
 <?php if ($cu !== ''):
-    $w2 = ['o.customer_id=(SELECT id FROM customers WHERE phone=?)']; $a2 = [$cu];
+    $w2 = ['o.customer_id=(SELECT id FROM customers WHERE phone=? OR phone2=? LIMIT 1)']; $a2 = [$cu, $cu];
     date_where($w2, $a2, 'o.d');
     shift_where($w2, $a2, 'o.shift');
     $q = $db->prepare('SELECT o.*, dr.name dname FROM orders o LEFT JOIN drivers dr ON dr.id=o.driver_id WHERE ' . implode(' AND ', $w2) . ' ORDER BY o.d DESC, o.id DESC');
     $q->execute($a2);
     $Dt = $q->fetchAll();
     $sv = array_sum(array_column($Dt, 'val')); $sf = array_sum(array_column($Dt, 'fee'));
-    $ci = $db->prepare('SELECT * FROM customers WHERE phone=?'); $ci->execute([$cu]); $info = $ci->fetch(); ?>
+    $ci = $db->prepare('SELECT * FROM customers WHERE phone=? OR phone2=?'); $ci->execute([$cu, $cu]); $info = $ci->fetch(); ?>
 <h3>تقرير العميل <?= h(($info['code'] ?? '') . ' ' . ($info['name'] ?? '')) ?> — <?= h($cu) ?></h3>
+<?php if (!empty($info['phone2'])): ?><p class="mu">رقم تاني: <?= h($info['phone2']) ?></p><?php endif; ?>
 <?php if (!empty($info['address'])): ?><p class="mu">العنوان: <?= h($info['address']) ?></p><?php endif; ?>
+<?php if (!empty($info['address2'])): ?><p class="mu">عنوان تاني: <?= h($info['address2']) ?></p><?php endif; ?>
 <div class="k">
   <div><b><?= N($sv) ?></b><span>إجمالي المسحوبات</span></div>
   <div><b><?= N($sf) ?></b><span>إجمالي خدمة التوصيل</span></div>
