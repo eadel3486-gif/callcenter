@@ -27,6 +27,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $db->prepare('INSERT INTO payments(driver_id,d,amount,note,shift,method) VALUES(?,?,?,?,?,?)')->execute([$did, $d, $amt, trim($_POST['note'] ?? ''), $psh, pay_pick($_POST['method'] ?? 'cash')]);
             flash('تم تسجيل الدفعة');
         }
+    } elseif ($act === 'deldriver' && can('del')) {
+        $c1 = $db->prepare('SELECT COUNT(*) FROM orders WHERE driver_id=?'); $c1->execute([$did]);
+        $c2 = $db->prepare('SELECT COUNT(*) FROM payments WHERE driver_id=?'); $c2->execute([$did]);
+        if ((int)$c1->fetchColumn() > 0 || (int)$c2->fetchColumn() > 0) flash('لا يمكن حذف مندوب له أوردرات أو دفعات مسجّلة. استخدم «تعطيل» بدلاً من الحذف.', 'err');
+        else {
+            $db->prepare('DELETE FROM locations WHERE driver_id=?')->execute([$did]);
+            $db->prepare('DELETE FROM drivers WHERE id=?')->execute([$did]);
+            flash('تم حذف المندوب');
+        }
     } elseif ($act === 'delpay' && can('del')) {
         if (user_shift() !== '') $db->prepare('DELETE FROM payments WHERE id=? AND shift=?')->execute([(int)($_POST['id'] ?? 0), user_shift()]);
         else $db->prepare('DELETE FROM payments WHERE id=?')->execute([(int)($_POST['id'] ?? 0)]);
@@ -106,6 +115,7 @@ function ($i, $r) use ($D, $post) {
     $s = '<a class="btn g s" href="index.php?p=orders&m=' . (int)$d['id'] . '">أوردراته</a> ';
     if (can('pay')) $s .= '<button class="btn s" onclick="document.getElementById(\'pay' . (int)$d['id'] . '\').showModal()">تسجيل دفعة</button> ';
     if (can('edit')) $s .= '<button class="btn g s" onclick="document.getElementById(\'lk' . (int)$d['id'] . '\').showModal()">ربط تليجرام</button> ' . $post('toggle', $d['id'], $d['active'] ? 'تعطيل' : 'تفعيل');
+    if (can('del')) $s .= ' ' . $post('deldriver', $d['id'], 'حذف', 'r', 'حذف هذا المندوب نهائياً؟');
     return $s;
 }) ?>
 <p class="mu">الإجمالي = قيمة الأوردرات + خدمة التوصيل. أوردرات الفيزا وإنستا باي مدفوعة إلكترونياً فلا تدخل في عهدة المندوب، والمتبقي = «كاش عليه» − «سلّمه».<?= $sh !== '' ? ' الأرقام هنا لشيفت ' . h($sh) . ' فقط (أوردراته ودفعاته).' : ' الدفعات القديمة بدون شيفت تظهر في «الكل» فقط.' ?></p>
