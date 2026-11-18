@@ -64,10 +64,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
         redirect('index.php?p=customers');
     } elseif ($act === 'delete' && can('del')) {
-        $cnt = $db->prepare('SELECT COUNT(*) FROM orders WHERE customer_id=?');
-        $cnt->execute([$id]);
-        if ((int)$cnt->fetchColumn() > 0) flash('لا يمكن حذف عميل له أوردرات مسجّلة. عدّل بياناته بدلاً من الحذف.', 'err');
-        else { $db->prepare('DELETE FROM customers WHERE id=?')->execute([$id]); flash('تم حذف العميل'); }
+        // حذف العميل مستقل عن الأوردرات: نحتفظ بالأوردرات كسجل تاريخي ونفصل ارتباطها بالعميل.
+        $db->beginTransaction();
+        try {
+            $db->prepare('UPDATE orders SET customer_id=NULL WHERE customer_id=?')->execute([$id]);
+            $db->prepare('DELETE FROM customers WHERE id=?')->execute([$id]);
+            $db->commit();
+            flash('تم حذف العميل. الأوردرات السابقة ما زالت محفوظة بشكل مستقل.');
+        } catch (Throwable $e) {
+            if ($db->inTransaction()) $db->rollBack();
+            flash('تعذر حذف العميل: ' . $e->getMessage(), 'err');
+        }
         redirect(qs(['ec' => null]));
     }
 }

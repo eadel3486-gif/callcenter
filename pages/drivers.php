@@ -28,13 +28,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             flash('تم تسجيل الدفعة');
         }
     } elseif ($act === 'deldriver' && can('del')) {
-        $c1 = $db->prepare('SELECT COUNT(*) FROM orders WHERE driver_id=?'); $c1->execute([$did]);
-        $c2 = $db->prepare('SELECT COUNT(*) FROM payments WHERE driver_id=?'); $c2->execute([$did]);
-        if ((int)$c1->fetchColumn() > 0 || (int)$c2->fetchColumn() > 0) flash('لا يمكن حذف مندوب له أوردرات أو دفعات مسجّلة. استخدم «تعطيل» بدلاً من الحذف.', 'err');
-        else {
+        // حذف المندوب مستقل: الأوردرات والدفعات تبقى كسجلات تاريخية بلا ارتباط بمندوب نشط.
+        $db->beginTransaction();
+        try {
+            $db->prepare('UPDATE orders SET driver_id=NULL WHERE driver_id=?')->execute([$did]);
+            // الدفعات محفوظة كما هي كسجل مالي تاريخي ولا يتم حذفها مع المندوب.
             $db->prepare('DELETE FROM locations WHERE driver_id=?')->execute([$did]);
             $db->prepare('DELETE FROM drivers WHERE id=?')->execute([$did]);
-            flash('تم حذف المندوب');
+            $db->commit();
+            flash('تم حذف المندوب. الأوردرات والدفعات السابقة ما زالت محفوظة بشكل مستقل.');
+        } catch (Throwable $e) {
+            if ($db->inTransaction()) $db->rollBack();
+            flash('تعذر حذف المندوب: ' . $e->getMessage(), 'err');
         }
     } elseif ($act === 'delpay' && can('del')) {
         if (user_shift() !== '') $db->prepare('DELETE FROM payments WHERE id=? AND shift=?')->execute([(int)($_POST['id'] ?? 0), user_shift()]);
